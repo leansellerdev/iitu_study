@@ -1,100 +1,60 @@
-import pandas as pd
+import sys
+
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
-import seaborn as sns
 
 # Загрузка данных
-data = pd.read_csv("../../BTC-Hourly.csv")
-data['date'] = pd.to_datetime(data['date'])
-data.set_index('date', inplace=True)
+data = pd.read_csv('../ozon_dataset_cleaned_price.csv')
 
-# Создание признаков
-data['price_change'] = data['close'].diff()
-data['target_class'] = (data['price_change'] > 0).astype(int)
+# Очистка столбца цены от нечисловых символов и преобразование в числовой формат
+# data['price_clean'] = data['price'].str.replace(r'\D', '', regex=True).astype(float)
 
-# Технические индикаторы
-data['SMA_10'] = data['close'].rolling(window=10).mean()
-data['SMA_50'] = data['close'].rolling(window=50).mean()
+# Фильтрация корректных значений цены
+price_data = data['price_clean'].dropna()
 
-def compute_rsi(data, window=14):
-    delta = data['close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
-    RS = gain / loss
-    RSI = 100 - (100 / (1 + RS))
-    return RSI
+# Создание диапазонов цен:
+# До 100,000 с шагом 10,000
+low_price_bins = np.arange(10000, 100001, 10000)
+# Выше 100,000 с шагом 100,000 (начинаем с 200,000, чтобы избежать дублирования границ)
+high_price_bins = np.arange(200000, price_data.max() + 100000, 100000)
+# Объединение диапазонов
+combined_bins = np.concatenate((low_price_bins, high_price_bins))
 
-data['RSI_14'] = compute_rsi(data)
-data['EMA_12'] = data['close'].ewm(span=12, adjust=False).mean()
-data['EMA_26'] = data['close'].ewm(span=26, adjust=False).mean()
-data['MACD'] = data['EMA_12'] - data['EMA_26']
-data['Signal_Line'] = data['MACD'].ewm(span=9, adjust=False).mean()
+# Создание меток для диапазонов
+combined_labels = [f"{int(combined_bins[i])}-{int(combined_bins[i+1])}" for i in range(len(combined_bins) - 1)]
 
-# Удаление NaN значений
-data.dropna(inplace=True)
+# Группировка цен по диапазонам
+binned_prices_combined = pd.cut(price_data, bins=combined_bins, labels=combined_labels, right=False)
 
-# Выбор признаков и целевой переменной
-features = ['open', 'high', 'low', 'close', 'Volume BTC', 'Volume USD',
-            'SMA_10', 'SMA_50', 'RSI_14', 'MACD', 'Signal_Line']
-X = data[features]
-y = data['target_class']
+# Подсчёт количества товаров в каждом диапазоне
+binned_counts_combined = binned_prices_combined.value_counts(sort=False)
 
-# Разделение данных
-from sklearn.model_selection import train_test_split
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
+# Вычисление PMF (относительная частота)
+binned_pmf_combined = binned_counts_combined / binned_counts_combined.sum()
 
-# Обучение модели
-from sklearn.tree import DecisionTreeClassifier
-clf = DecisionTreeClassifier(random_state=42)
-clf.fit(X_train, y_train)
+# Вычисление CDF (накопленная вероятность)
+binned_cdf_combined = binned_pmf_combined.cumsum()
 
-# Настройка гиперпараметров
-from sklearn.model_selection import GridSearchCV
+# Построение графика PMF
+plt.figure(figsize=(12, 6))
+plt.bar(combined_labels, binned_pmf_combined, alpha=0.6, label='PMF')
+plt.title("Функция вероятности распределения (PMF) цен по диапазонам")
+plt.xlabel("Диапазон цен (KZT)")
+plt.ylabel("Вероятность")
+plt.xticks(rotation=45)
+plt.legend()
+plt.grid()
 
-param_grid = {
-    'max_depth': [3, 5, 7, 10, None],
-    'min_samples_split': [2, 5, 10],
-    'min_samples_leaf': [1, 2, 4],
-    'criterion': ['gini', 'entropy']
-}
+# Построение графика CDF
+plt.figure(figsize=(12, 6))
+plt.step(combined_labels, binned_cdf_combined, where='mid', label='CDF')
+plt.title("Кумулятивная функция распределения (CDF) цен по диапазонам")
+plt.xlabel("Диапазон цен (KZT)")
+plt.ylabel("Накопленная вероятность")
+plt.xticks(rotation=45)
+plt.legend()
+plt.grid()
 
-grid_search = GridSearchCV(estimator=clf, param_grid=param_grid,
-                           cv=5, n_jobs=-1, scoring='accuracy', verbose=2)
-grid_search.fit(X_train, y_train)
-
-print("Лучшие параметры:", grid_search.best_params_)
-print("Лучшая точность:", grid_search.best_score_)
-
-best_clf = grid_search.best_estimator_
-
-# Оценка модели
-from sklearn.metrics import accuracy_score, confusion_matrix, classification_report
-
-y_pred = best_clf.predict(X_test)
-accuracy = accuracy_score(y_test, y_pred)
-print(f"Точность модели: {accuracy:.2f}")
-
-conf_matrix = confusion_matrix(y_test, y_pred)
-sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues')
-plt.title('Матрица ошибок')
-plt.xlabel('Предсказанные классы')
-plt.ylabel('Истинные классы')
-plt.show()
-
-print(classification_report(y_test, y_pred))
-
-# Визуализация дерева решений
-from sklearn import tree
-
-plt.figure(figsize=(20,10))
-tree.plot_tree(best_clf, feature_names=features, class_names=['Падение', 'Рост'], filled=True, fontsize=12)
-plt.title('Дерево решений')
-plt.show()
-
-# Визуализация важности признаков
-importances = best_clf.feature_importances_
-indices = np.argsort(importances)[::-1]
-plt.figure(figsize=(10,6))
-sns.barplot(x=importances[indices], y=np.array(features)[indices])
-plt.title('Важность признаков')
+# Отображение графиков
 plt.show()

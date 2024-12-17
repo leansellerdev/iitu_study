@@ -35,4 +35,4 @@ def wait_time(lmbda: int, mu: int) -> float:
     wq = lmbda / mu * (mu - lmbda)
     return wq
 
-print(wait_time(6, 6))
+print(wait_time(0.6, 6))
